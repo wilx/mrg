@@ -1,4 +1,5 @@
 #include "bitmap.h"
+#include "gstdint.h"
 #include <stdlib.h>
 #include <string.h>
 

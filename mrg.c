@@ -139,6 +139,7 @@ stkelem_delete (stkelem_t * se)
    exits with EXIT_FAILURE.
    @param msg user supplied message
 */
+void error (const char * msg) __attribute__((noreturn));
 void 
 error (const char * msg)
 {
