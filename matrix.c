@@ -168,17 +168,19 @@ trimatrix_set (const trimatrix_t * mx, unsigned x, unsigned y, int val)
 /**
    Returns how many bytes are needed to serialize trimatrix.
 */
+/*
 size_t 
 trimatrix_serialize_size (const trimatrix_t * mx)
 {
   return bitmap_serialize_size (mx->bm) 
     + sizeof (unsigned);
 }
-
+*/
 
 /**
    Serializes trimatrix into a buffer buf.
 */
+/*
 void 
 trimatrix_serialize (void * buf, size_t * size, size_t * pos,
                      const trimatrix_t * mx)
@@ -189,11 +191,12 @@ trimatrix_serialize (void * buf, size_t * size, size_t * pos,
   bitmap_serialize (buf, size, pos, mx->bm);
   *size += sizeof (unsigned);
 }
-
+*/
   
 /**
    Reconstructs trimatrix out of serialized represntation.
 */
+/*
 trimatrix_t * 
 trimatrix_deserialize (const void * buf, size_t * pos)
 {
@@ -216,6 +219,7 @@ trimatrix_deserialize (const void * buf, size_t * pos)
   
   return mx;
 }
+*/
 
 
 /**
@@ -325,6 +329,7 @@ wtrimatrix_set (const wtrimatrix_t * mx, unsigned x, unsigned y, unsigned char v
 }
 
 
+/*
 size_t 
 wtrimatrix_serialize_size (const wtrimatrix_t * mx)
 {
@@ -374,4 +379,4 @@ wtrimatrix_deserialize (const void * buf, size_t * pos)
   *pos = p;
   return mx;
 }
-
+*/

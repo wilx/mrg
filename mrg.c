@@ -4,19 +4,21 @@
 #include <string.h>
 #include <time.h>
 #include <limits.h>
+#include <unistd.h>
 #include <mpi.h>
 #include "config.h"
 #include "bitmap.h"
 #include "matrix.h"
 #include "list.h"
+#include "utility.h"
 
 
 #define TYPE_MSG 'M' /* A message. See MSG_*. */
 #define TYPE_STKELEM 'S' /* Stack element, as response to a request. */
 #define TYPE_BEST 'B' /* Best stack element. */
 #define TYPE_BWEIGHT 'C' /* Best weight. */
-#define TYPE_GRAPH 'G' /* Graph */
-#define TYPE_GWEIGHTS 'H' /* Weights of graph's edges. */
+/*#define TYPE_GRAPH 'G'*/ /* Graph */
+/*#define TYPE_GWEIGHTS 'H'*/ /* Weights of graph's edges. */
 #define TYPE_TOKEN  'T' /* Token for ADUV. */
 #define TYPE_DONOR 'D' /* Answer to a donor request. */
 
@@ -28,21 +30,32 @@
 
 #define TOKEN_BLACK 'B'
 #define TOKEN_WHITE 'W'
+#define TOKEN_NONE 'N'
 
+#define TAG_CAN_WAIT 1
+#define TAG_NEEDS_ATTENTION 20
+//#define TAG_WORK_COMM 2
+//#define TAG_DONOR_COMM 3
+
+/*
 struct _msg_t
 {
   char type;
   char buf[1];
 };
 typedef struct _msg_t msg_t;
+*/
 
 /* Message receive buffer. */
-msg_t * recv_buf;
+void * recv_buf;
 size_t recv_buf_len;
 /* */
+/*
 msg_t * graph_buf;
 msg_t * weights_buf;
+*/
 /* Predefined messages. */
+/*
 msg_t donor_msg = {TYPE_DONOR, {'\0'}};
 const msg_t eoc_msg = {TYPE_MSG, {MSG_EOC}};
 const msg_t req_msg = {TYPE_MSG, {MSG_REQ}};
@@ -51,12 +64,17 @@ const msg_t dreq_msg = {TYPE_MSG, {MSG_DREQ}};
 const msg_t eoe_msg = {TYPE_MSG, {MSG_EOE}};
 const msg_t btoken_msg = {TYPE_TOKEN, {TOKEN_BLACK}};
 const msg_t wtoken_msg = {TYPE_TOKEN, {TOKEN_WHITE}};
+*/
 /* GCZ-AHD counter. */
 int donor;
 /* ADUV */
 char mycolor, token;
 /* MPI status. */
 MPI_Status status;
+/* "Would give out work" flag. */
+int wouldgive = 0;
+/* */
+unsigned denycount = 0;
 
 
 struct _stkelem_t 
@@ -206,25 +224,23 @@ stkelem_serialize_size (const stkelem_t * se)
 
 */ 
 void 
-stkelem_serialize (void * buf, size_t * size, size_t * pos,
-                   const stkelem_t * se)
+stkelem_serialize (void * buf, size_t size, size_t * pos, stkelem_t * se)
 {
-  size_t sz = 0, bmsz;
+  int ret;
 
-  *(int *)(buf + *pos) = se->uptodate;
-  sz += sizeof (int);
-  *pos += sizeof (int);
+  ret = MPI_Pack (&se->uptodate, 1, MPI_INT, buf, size, pos, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack()");
 
-  *(int *)(buf + *pos) = se->weight;
-  sz += sizeof (int);
-  *pos += sizeof (int);
+  ret = MPI_Pack (&se->weight, 1, MPI_INT, buf, size, pos, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack()");
 
-  *(unsigned *)(buf + *pos) = se->next;
-  sz += sizeof (unsigned);
-  *pos += sizeof (unsigned);
-
-  bitmap_serialize (buf, &bmsz, pos, se->set);
-  sz += bmsz;
+  ret = MPI_Pack (&se->next, 1, MPI_UNSIGNED, buf, size, pos, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack()");
+  
+  bitmap_serialize (buf, size, pos, se->set);
 }
 
 
@@ -232,73 +248,135 @@ stkelem_serialize (void * buf, size_t * size, size_t * pos,
 
 */
 stkelem_t * 
-stkelem_deserialize (const void * buf, size_t * pos)
+stkelem_deserialize (void * buf, size_t insize, size_t * pos)
 {
   stkelem_t * se;
-  size_t p = *pos;
-  
+  int ret;
+
   se = malloc (sizeof (stkelem_t));
   if (! se)
     return NULL;
 
-  se->uptodate = *(int *)(buf + p);
-  p += sizeof (int);
+  ret = MPI_Unpack (buf, insize, pos, &se->uptodate, 1, MPI_INT, 
+                    MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Unpack()");
 
-  se->weight = *(int *)(buf + p);
-  p += sizeof (int);
+  ret = MPI_Unpack (buf, insize, pos, &se->weight, 1, MPI_INT, 
+                    MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Unpack()");
 
-  se->next = *(unsigned *)(buf + p);
-  p += sizeof (unsigned);
+  ret = MPI_Unpack (buf, insize, pos, &se->next, 1, MPI_UNSIGNED, 
+                    MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Unpack()");
 
-  se->set = bitmap_deserialize (buf, &p);
+  se->set = bitmap_deserialize (buf, insize, pos);
   if (! se->set)
     {
       free (se);
       return NULL;
     }
   
-  *pos = p;
   return se;
 }
 
 
-/**
-   Prints msg and possible message for errno to stderr and 
-   exits with EXIT_FAILURE.
-   @param msg user supplied message
-*/
-void error (const char * msg) __attribute__((noreturn));
-void 
-error (const char * msg)
+void pack_type (void * buf, size_t size, size_t * pos, char type)
 {
-  if (! errno)
-    fprintf (stderr, "%s\n", msg);
-  else
-    fprintf (stderr, "%s: %s\n", msg, strerror (errno));
-  //exit (EXIT_FAILURE);
-  abort ();
+  int ret;
+
+  ret = MPI_Pack (&type, 1, MPI_CHAR, buf, size, pos, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack()");
 }
 
 
-/**
-   Prints msg and possible message for MPI error to stderr and 
-   exits with EXIT_FAILURE.
-   @param msg user supplied message
-*/
-void mpierror (int ret, const char * msg) __attribute__((noreturn));
-void 
-mpierror (int ret, const char * msg)
+void pack_simple_msg (void * buf, size_t size, size_t * pos, char msg_type)
 {
-  int len;
-  char str[1000];
+  int ret;
 
-  MPI_Error_string (ret, str, &len);
-  fprintf (stderr, "%s: %s\n", msg, str);
-  //exit (EXIT_FAILURE);
-  abort ();
+  pack_type (buf, size, pos, TYPE_MSG);
+  ret = MPI_Pack (&msg_type, 1, MPI_CHAR, buf, size, pos, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack()");
 }
 
 
+void pack_bweight_msg (void * buf, size_t size, size_t * pos, int bweight)
+{
+  int ret;
+
+  pack_type (buf, size, pos, TYPE_BWEIGHT);
+  ret = MPI_Pack (&bweight, 1, MPI_INT, buf, size, pos, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack()");
+}
+
+
+void pack_stkelem_msg (void * buf, size_t size, size_t * pos, stkelem_t * se)
+{
+  pack_type (buf, size, pos, TYPE_STKELEM);
+  stkelem_serialize (buf, size, pos, se);
+}
+
+
+void pack_best_msg (void * buf, size_t size, size_t * pos, stkelem_t * se)
+{
+  pack_type (buf, size, pos, TYPE_BEST);
+  stkelem_serialize (buf, size, pos, se);
+}
+
+
+void pack_char (void * buf, size_t size, size_t * pos, char ch)
+{
+  int ret; 
+
+  ret = MPI_Pack (&ch, 1, MPI_CHAR, buf, size, pos, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack()");
+}
+
+
+void pack_donor_msg (void * buf, size_t size, size_t * pos, char dnr)
+{
+  pack_type (buf, size, pos, TYPE_DONOR);
+  pack_char (buf, size, pos, dnr);
+}
+
+
+void pack_token_msg (void * buf, size_t size, size_t * pos, char tok)
+{
+  pack_type (buf, size, pos, TYPE_TOKEN);
+  pack_char (buf, size, pos, tok);
+}
+
+
+char unpack_type (void * buf, size_t insize, size_t * pos, char * type)
+{
+  int ret;
+  char t;
+
+  ret = MPI_Unpack (buf, insize, pos, &t, 1, MPI_CHAR, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Unpack()");
+  if (type)
+    *type = t;
+  return t;
+}
+
+
+char unpack_char (void * buf, size_t insize, size_t * pos)
+{
+  int ret;
+  char ch;
+
+  ret = MPI_Unpack (buf, insize, pos, &ch, 1, MPI_CHAR, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Unpack()");
+  return ch;
+}
 
 /**
    Initializes stack for DFS algoritm.
@@ -308,7 +386,7 @@ initialize_stack (void)
 {
   stkelem_t * el = stkelem_new (N, 0, 0, 1);
   
-  printf ("[%d] initializing stack\n", rank);
+  fprintf (stderr, "[%d] initializing stack\n", rank);
   if (! el)
     error ("Memory allocation failure");
   if (! list_pushback (stack, el))
@@ -325,7 +403,7 @@ initialize (void)
   /* Best solution. */
   best = stkelem_new (N, INT_MAX, 0, 1);  
   /* Receive buffer. */
-  recv_buf_len = 1 + stkelem_serialize_size (best);
+  recv_buf_len = 1 + stkelem_serialize_size (best) + 1000 /*rezerva :)*/;
   recv_buf = malloc (recv_buf_len);
   /* Other buffers. */
   /*graph_buf = malloc (1 + trimatrix_serialize_size (graph));*/
@@ -333,7 +411,10 @@ initialize (void)
   if (!best || ! recv_buf /*|| ! graph_buf || ! weights_buf*/)
     error ("Memory allocation failure");
   /* The rest. */
-  token = TOKEN_WHITE;
+  if (rank == 0)
+    token = TOKEN_WHITE;
+  else
+    token = TOKEN_NONE;
   mycolor = TOKEN_WHITE;
   if (rank == 0)
     initialize_stack ();
@@ -354,11 +435,11 @@ initialize_mpi (int * argc, char *** argv, int * rank, int * size)
   ret = MPI_Comm_rank (MPI_COMM_WORLD, rank);
   if (ret != MPI_SUCCESS)
     mpierror (ret, "MPI_Comm_rank");
-  printf ("[%d] reporting\n", *rank);
+  fprintf (stderr, "[%d] reporting\n", *rank);
   ret = MPI_Comm_size(MPI_COMM_WORLD, size);
   if (ret != MPI_SUCCESS)
     mpierror (ret, "MPI_Comm_size");
-  printf ("[%d] worldsize=%d\n", *rank, worldsize);
+  fprintf (stderr, "[%d] worldsize=%d\n", *rank, worldsize);
 }
 
 
@@ -375,7 +456,14 @@ update_weight (stkelem_t * el, unsigned node)
 
   if (node == 0)
     abort ();
+  if (el->uptodate)
+    {
+      fprintf (stderr, "[%d] trying to update up-to-date stack element\n", 
+               rank);
+      abort ();
+    }
 
+  /* Add/substract weight of edges to/from current */
   for (i = 1; i <= N; ++i)
     {
       if (i == node)
@@ -383,6 +471,8 @@ update_weight (stkelem_t * el, unsigned node)
       if (trimatrix_get (graph, node, i))
         {
           /* Is node i in set Y? */
+          /*fprintf (stderr, "[%d] N=%d, i=%d, bitmap_size(el->set)=%d\n", 
+            rank, N, i, bitmap_size (el->set));*/
           if (bitmap_getbit (el->set, i-1))
             /* Substract weight of edges whose end nodes are now
                both in Y from the weight of the cut. */
@@ -397,36 +487,36 @@ update_weight (stkelem_t * el, unsigned node)
   el->uptodate = 1;
   if (el->weight < best->weight && el->weight > 0)
     {
-      printf ("[%d] got better solution than current best %d < %d\n",
+      size_t pos = 0;
+
+      fprintf (stderr, "[%d] got better solution than current best %d < %d\n",
               rank, el->weight, best->weight);
-      best = el;
       stkelem_delete (best);
       best = stkelem_clone (el);
       if (! best)
         error ("Memory allocation failure.");
       if (rank != 0)
         {
-          size_t pos = 0, size;
+          size_t pos = 0;
           
           /* Send best stack element to P1. */
-          recv_buf->type = TYPE_BEST;
-          stkelem_serialize (recv_buf->buf, &size, &pos, best);
-          printf ("[%d] sending my best to 0\n", rank);
-          ret = MPI_Send (recv_buf, recv_buf_len, MPI_BYTE, 0, 1,
+          pack_best_msg (recv_buf, recv_buf_len, &pos, best);
+          fprintf (stderr, "[%d] sending my best to 0\n", rank);
+          ret = MPI_Send (recv_buf, pos, MPI_PACKED, 0, TAG_CAN_WAIT,
                           MPI_COMM_WORLD);
           if (ret != MPI_SUCCESS)
             mpierror (ret, "MPI_Send()");
           
         }
       /* Send best weight to everybody else. */
-      recv_buf->type = TYPE_BWEIGHT;
-      *(int *)recv_buf->buf = best->weight;
+      pack_bweight_msg (recv_buf, recv_buf_len, &pos, best->weight);
       for (i = 1; i < worldsize; ++i)
         {
           if (i == rank)
             continue;
-          printf ("[%d] sending my best weight to everybody else\n", rank);
-          ret = MPI_Send (recv_buf, 1 + sizeof (int), MPI_BYTE, i, 1,
+          fprintf (stderr, "[%d] sending my best weight to everybody else\n",
+                   rank);
+          ret = MPI_Send (recv_buf, pos, MPI_PACKED, i, TAG_CAN_WAIT, 
                           MPI_COMM_WORLD);
           if (ret != MPI_SUCCESS)
             mpierror (ret, "MPI_Send()");
@@ -476,295 +566,494 @@ generate_depth (list_t * list, stkelem_t * el)
 }
 
 
-void end_computation (void)
+void 
+end_computation (void)
 {
   int i;
+  size_t pos = 0;
+  FILE * output = stdout;
 
   if (rank != 0)
     error ("end_computation() called by rank != 0");
 
+  /* Prepare the message. */
+  pack_simple_msg (recv_buf, recv_buf_len, &pos, MSG_EOC);
+  fprintf (stderr, "[%d] sending MSG_EOC to processor", rank);
   /* End of computation. */
   for (i = 1; i < worldsize; ++i)
     {
-      MPI_Send ((void *)&eoc_msg, sizeof (msg_t), MPI_BYTE, i,
-                1, MPI_COMM_WORLD);
+      int ret;
+
+      ret = MPI_Send (recv_buf, pos, MPI_PACKED, i, TAG_NEEDS_ATTENTION, 
+                      MPI_COMM_WORLD); 
+      if (ret != MPI_SUCCESS)
+        mpierror (ret, "MPI_Send()");
+      fprintf (stderr, " %d", i);
     }
+  fprintf (stderr, "\n");
+
   /* Print out the solution. */
-  printf ("Weight of the best solution: %d\n", best->weight);
-  printf ("Set X:");
+  fprintf (output, "\nWeight of the best solution: %d\n", best->weight);
+  fprintf (output, "Set X:");
   for (i = 0; i < bitmap_size (best->set); ++i)
     {
       int b = bitmap_getbit (best->set, i);
       if (! b)
-        printf (" %d", i+1);
+        fprintf (output, " %d", i+1);
     }
-  printf ("\n");
-  printf ("Set Y:");
+  fprintf (output, "\n");
+  fprintf (output, "Set Y:");
   for (i = 0; i < bitmap_size (best->set); ++i)
     {
       int b = bitmap_getbit (best->set, i);
       if (b)
-        printf (" %d", i+1);
+        fprintf (output, " %d", i+1);
     }
-  printf ("\n");
+  fprintf (output, "\n");
+  fflush (output);
 
   MPI_Finalize ();
   exit (EXIT_SUCCESS);
 }
 
 
-void process_message (msg_t * msg)
+void 
+do_tokens ()
+{
+  int ret;
+  size_t pos = 0;
+
+  if (rank == 0)
+    {
+      /* Prepare the message. */
+      pack_token_msg (recv_buf, recv_buf_len, &pos, TOKEN_WHITE);
+      //pack_token_msg (recv_buf, recv_buf_len, &pos, token);
+      /* Send white token to P2. */
+      fprintf (stderr, "[0] sending WHITE token to 1\n");
+      ret = MPI_Send (recv_buf, pos, MPI_PACKED, 1, 
+                      TAG_NEEDS_ATTENTION, MPI_COMM_WORLD);
+      if (ret != MPI_SUCCESS)
+        mpierror (ret, "MPI_Send()");
+      token = TOKEN_NONE;
+    }
+  else
+    {
+      if (token != TOKEN_NONE)
+        {
+          /* Prepare the message. */
+          pack_token_msg (recv_buf, recv_buf_len, &pos, token);
+          /* Send my token to the next process. */
+          fprintf (stderr, "[%d] sending '%c' token to %d\n",
+                   rank, token, (rank + 1) % worldsize);
+          ret = MPI_Send (recv_buf, pos, MPI_PACKED, 
+                          (rank + 1) % worldsize, TAG_NEEDS_ATTENTION, 
+                          MPI_COMM_WORLD);
+          if (ret != MPI_SUCCESS)
+            mpierror (ret, "MPI_Send()");
+          mycolor = TOKEN_WHITE;
+          token = TOKEN_NONE;
+        }
+    }
+}
+ 
+void process_message (void * buf, size_t insize);
+
+/* Either send out work or deny the request. */
+void 
+process_work_request (int from)
+{
+  listelem_t * it;
+  stkelem_t * el;
+  unsigned half;
+  int i, ret, j=0;
+  list_t * tmplist;
+
+  fprintf (stderr, "[%d] received work request from %d\n", rank, from);
+ 
+  /* 
+     Do we have anything to give? 
+     Do we want to give at all?
+  */
+  if (list_size (stack) == 0 || ! wouldgive)
+    {
+      size_t pos = 0;
+
+      /* Prepare the message. */
+      pack_simple_msg (recv_buf, recv_buf_len, &pos, MSG_DENY);
+      /* Nope, deny the request. */
+      fprintf (stderr, "[%d] there is nothing to give, denying request\n",
+              rank);
+      ret = MPI_Send (recv_buf, pos, MPI_PACKED, from, TAG_NEEDS_ATTENTION, 
+                      MPI_COMM_WORLD);
+      if (ret != MPI_SUCCESS)
+        mpierror (ret, "MPI_Send()");
+      return;
+    }
+  /* We have something to give. */
+  tmplist = list_new ();
+  if (! tmplist)
+    error ("Memory allocation failure.");
+  el = list_last (stack, &it);
+  if (! el->uptodate)
+    update_weight (el, el->next);
+  half = (N - el->next) / 2;
+  if (half != 0 && rank > from)
+    /* Change token. */
+    mycolor = TOKEN_BLACK;
+  /* Generate the half. */
+  fprintf (stderr, "[%d] generating %d new stack elements\n",
+          rank, half);
+  for (i = 1; i <= half; ++i)
+    generate_depth (tmplist, el);
+  /* Send the half to requester. */
+  while (list_size (tmplist) != 0)
+    {
+      stkelem_t * tmpel;
+      size_t pos = 0;
+                
+      tmpel = list_popback (tmplist);
+      pack_stkelem_msg (recv_buf, recv_buf_len, &pos, tmpel);
+      fprintf (stderr, "[%d] sending generated stack element %d to %d\n",
+              rank, ++j, from);
+      ret = MPI_Send (recv_buf, pos, MPI_PACKED, from, TAG_NEEDS_ATTENTION,
+                      MPI_COMM_WORLD);
+      if (ret != MPI_SUCCESS)
+        mpierror (ret, "MPI_Send()");
+      stkelem_delete (tmpel);
+    }
+  list_delete (tmplist);
+  /* Send MSG_EOE to requester. */
+  {
+    size_t pos = 0; 
+    
+    pack_simple_msg (recv_buf, recv_buf_len, &pos, MSG_EOE);
+    fprintf (stderr, "[%d] sending MSG_EOE to %d\n", rank, from);
+    ret = MPI_Send (recv_buf, pos, MPI_PACKED, from, TAG_NEEDS_ATTENTION,
+                    MPI_COMM_WORLD);
+    if (ret != MPI_SUCCESS)
+      mpierror (ret, "MPI_Send()");
+  }
+}
+
+
+void 
+process_donor_request (int from)
 {
   int ret;
 
-  printf ("[%d] processing message type='%c'\n", rank, msg->type);
-  switch (msg->type)
+  if (rank == 0)
+    {
+      size_t pos = 0;
+      pack_donor_msg (recv_buf, recv_buf_len, &pos, (char)donor);
+      fprintf (stderr, "[0] request for donor has been received"
+              ", sending donor %d to process %d\n", donor, from);
+      donor = (donor + 1) % worldsize;
+      ret = MPI_Send (recv_buf, pos, MPI_PACKED, from, TAG_NEEDS_ATTENTION, 
+                      MPI_COMM_WORLD);
+      if (ret != MPI_SUCCESS)
+        mpierror (ret, "MPI_Send()");
+      return;
+    }
+  else
+    error ("Donor request to process != P1!!!");
+}
+
+
+/* Processes messages with TAG_NEEDS_ATTENTION. */
+void
+process_clamour_message (void * buf, size_t insize)
+{
+  size_t inpos = 0;
+  char type;
+  char msg_type;
+  
+  type = unpack_char (buf, insize, &inpos);
+  fprintf (stderr, "[%d] processing message type='%c'\n", rank, type);
+  switch (type)
     {
     case TYPE_MSG:
-      switch (msg->buf[0])
+      msg_type = unpack_char (buf, insize, &inpos);
+      fprintf (stderr, "[%d] processing simple message type='%c'\n", rank, 
+               msg_type);
+      switch (msg_type)
         {
         case MSG_REQ:
-          {
-            listelem_t * it;
-            stkelem_t * el;
-            unsigned half;
-            int i;
-            list_t * tmplist;
-
-            printf ("[%d] received work request from %d\n",
-                    rank, status.MPI_SOURCE);
- 
-            /* Do we have anything to give? */
-            if (list_size (stack) == 0)
-              {
-                /* Nope, deny the request. */
-                printf ("[%d] there is nothing to give, denying\n",
-                        rank);
-                ret = MPI_Send ((void *)&deny_msg, sizeof (msg_t), MPI_BYTE,
-                                status.MPI_SOURCE, 1, MPI_COMM_WORLD);
-                if (ret != MPI_SUCCESS)
-                  mpierror (ret, "MPI_Send()");
-                return;
-              }
-
-            tmplist = list_new ();
-            if (! tmplist)
-              error ("Memory allocation failure.");
-            el = list_last (stack, &it);
-            if (! el->uptodate)
-              update_weight (el, el->next);
-            half = (N - el->next) / 2;
-            if (half != 0 && rank > status.MPI_SOURCE)
-              /* Chage token. */
-              mycolor = TOKEN_BLACK;
-            /* Generate the half. */
-            printf ("[%d] generating %d new stac elements\n",
-                    rank, half);
-            for (i = 1; i <= half; ++i)
-              generate_depth (tmplist, el);
-            /* Send the half to requester. */
-            while (list_size (tmplist) != 0)
-              {
-                stkelem_t * tmpel;
-                size_t pos = 0, size;
-                
-                tmpel = list_popback (tmplist);
-                stkelem_serialize (recv_buf->buf, &size, &pos, tmpel);
-                printf ("[%d] generated sending stack element to %d\n",
-                        rank, status.MPI_SOURCE);
-                ret = MPI_Send (recv_buf, recv_buf_len, MPI_BYTE, 
-                                status.MPI_SOURCE, 1, MPI_COMM_WORLD);
-                if (ret != MPI_SUCCESS)
-                  mpierror (ret, "MPI_Send()");
-                stkelem_delete (tmpel);
-              }
-            printf ("[%d] sending MSG_EOE to %d\n", 
-                    rank, status.MPI_SOURCE);
-            ret = MPI_Send ((void *)&eoe_msg, sizeof (msg_t), MPI_BYTE,
-                            status.MPI_SOURCE, 1, MPI_COMM_WORLD);
-            if (ret != MPI_SUCCESS)
-              mpierror (ret, "MPI_Send()");
-            return;
-          }
+          process_work_request (status.MPI_SOURCE);
+          return;
 
         case MSG_DREQ:
-          if (rank == 0)
-            {
-              donor_msg.buf[0] = (char)donor;
-              printf ("[0] request for donor has been received"
-                      ", sending %d to %d\n", donor, status.MPI_SOURCE);
-              donor = (donor + 1) % worldsize;
-              ret = MPI_Send (&donor_msg, sizeof (msg_t), MPI_BYTE,
-                              status.MPI_SOURCE, 1, MPI_COMM_WORLD);
-              if (ret != MPI_SUCCESS)
-                mpierror (ret, "MPI_Send()");
-              return;
-            }
-          else
-            error ("Donor request to process != P1!!!");
-
-        case MSG_DENY:
-          {
-            int src;
-            char type;
-
-            printf ("[%d] denying message from %d has been received\n",
-                    rank, status.MPI_SOURCE);
-            /* Send request for donor to P1. */
-            printf ("[%d] sending new request for donor to 0\n", rank);
-            ret = MPI_Send ((void *)&dreq_msg, sizeof (msg_t), MPI_BYTE, 0, 1,
-                            MPI_COMM_WORLD);
-            if (ret != MPI_SUCCESS)
-              mpierror (ret, "MPI_Send()");
-            /* Wait for an answer. */
-            do
-              {
-                ret = MPI_Recv (recv_buf, recv_buf_len, MPI_BYTE, 
-                                MPI_ANY_SOURCE, 1, MPI_COMM_WORLD, &status);
-                if (ret != MPI_SUCCESS)
-                  mpierror (ret, "MPI_Recv()");
-                src = status.MPI_SOURCE;
-                type = recv_buf->type;
-                process_message (recv_buf);
-              }
-            while (src != 0 || type != TYPE_DONOR);
-            return;
-          }
-
-        case MSG_EOE:
-          printf ("[%d] end of elements has been received\n", rank);
+          process_donor_request (status.MPI_SOURCE);
           return;
 
         case MSG_EOC:
-          printf ("[%d] end of computation has been received\n", rank);
+          fprintf (stderr, "[%d] end of computation has been received\n", 
+                   rank);
+          MPI_Finalize ();
           exit (EXIT_SUCCESS);
 
         default:
-          printf ("[%d] UNKNOWN MSG_*='%c'\n", rank, msg->buf[0]);
-          error ("Unknown MSG_*!!!");
+          fprintf (stderr, "[%d] unhandled clamour message!!!\n", rank);
+          error ("Unhandled MSG_ in process_clamour_message()!!!");
         }
-
-    case TYPE_DONOR:
-      {
-        int dnr = msg->buf[0];
-        int src;
-        char type, m;
-
-        printf ("[%d] donor %d has been received\n", rank, dnr);
-        printf ("[%d] requesting work from %d\n", rank, dnr);
-        ret = MPI_Send ((void *)&req_msg, sizeof (msg_t), MPI_BYTE, 
-                        msg->buf[0], 1, MPI_COMM_WORLD);
-        if (ret != MPI_SUCCESS)
-          mpierror (ret, "MPI_Send()");
-        do
-          {
-            ret = MPI_Recv (recv_buf, recv_buf_len, MPI_BYTE, MPI_ANY_SOURCE,
-                            1, MPI_COMM_WORLD, &status);
-            if (ret != MPI_SUCCESS)
-              mpierror (ret, "MPI_Recv()");
-            src = status.MPI_SOURCE;
-            type = recv_buf->type;
-            m = recv_buf->buf[0];
-            process_message (recv_buf);
-          }
-        while (src != dnr 
-               || ! ((type == TYPE_MSG && (m == MSG_EOE 
-                                           || m == MSG_DENY))
-                     || type == TYPE_STKELEM));
-        return;
-      }
-
-    case TYPE_STKELEM:
-      {
-        stkelem_t * se;
-        unsigned pos = 0;
-
-        printf ("[%d] stack element has been received from %d\n",
-                rank, status.MPI_SOURCE);
-        se = stkelem_deserialize (msg->buf, &pos);
-        if (! se)
-          error ("Memory allocation problem.");
-        if (! list_pushback (stack, se))
-          error ("Memory allocation problem.");
-        return;
-      }
-      
-    case TYPE_BEST:
-      {
-        stkelem_t * se;
-        unsigned pos = 0;
-
-        if (rank != 0)
-          error ("'Best' stack element received by process != P1!!!");
-        
-        se = stkelem_deserialize (msg->buf, &pos);
-        if (! se)
-          error ("Memory allocation problem.");
-        if (se->weight < best->weight)
-          {
-            best = se;
-            if (best->weight == 1)
-              end_computation ();
-          }
-        else
-          {
-            stkelem_delete (se);
-            printf ("[%d] received 'best' that"
-                    " is worse than its 'best'!!!\n", rank);
-          }
-        printf ("[0] received new best stack element, weight=%d\n",
-                best->weight);
-        return;
-      }
-
-    case TYPE_BWEIGHT:
-      {
-        if (*(int *)msg->buf < best->weight)
-          best->weight = *(int *)msg->buf;
-        else
-          printf ("[%d] received 'best' weight"
-                  " that is worse than its 'best'!!!\n", rank);
-        printf ("[%d] received new best weight=%d\n", rank, best->weight);
-        return;
-      }
-
     case TYPE_TOKEN:
       {
-        printf ("[%d] received '%c' token\n", rank, msg->buf[0]);
+        char tok;
+        
+        tok = unpack_char (buf, insize, &inpos);
+        fprintf (stderr, "[%d] received '%c' token\n", rank, tok);
         if (rank == 0)
-          {
-            if (msg->buf[0] == TOKEN_WHITE)
+          if (tok == TOKEN_WHITE)
+            {
+              fprintf (stderr, "[0] got WHITE token back"
+                       ", invoking end_computation()\n");
               end_computation ();
-            else
-              {
-                printf ("[%d] coloring to 'W'\n", rank);
-                token = TOKEN_WHITE;
-              }
-          }
+            }
+          else
+            {
+              fprintf (stderr, "[%d] coloring to 'W'\n", rank);
+              token = TOKEN_WHITE;
+            }
         else
-          {
-            if (mycolor == TOKEN_WHITE)
-              {
-                printf ("[%d] color='%c', token='%c' has been received\n",
-                        rank, mycolor, msg->buf[0]);
-                token = msg->buf[0];
-              }
-            else
-              {
-                printf ("[%d] color='%c', coloring token to '%c'\n",
-                        rank, mycolor, TOKEN_BLACK);
-                token = TOKEN_BLACK;
-              }
-          }
+          if (mycolor == TOKEN_WHITE)
+            {
+              fprintf (stderr, "[%d] color='%c', token='%c' has been"
+                       " received\n",
+                       rank, mycolor, tok);
+              token = tok;
+            }
+          else
+            {
+              fprintf (stderr, "[%d] color='%c', coloring token to '%c'\n",
+                       rank, mycolor, TOKEN_BLACK);
+              token = TOKEN_BLACK;
+            }
         return;
       }
 
     default:
-      error ("Unknown recv_buf->type!!!");
+      error ("Unhandled TYPE_* in process_clamour_message()!!!");
     }
 }
 
 
+int 
+request_donor (void)
+{
+  int ret;
+  size_t pos = 0;
+  char type;
+
+  /* Send request for donor to 0. */
+  pack_simple_msg (recv_buf, recv_buf_len, &pos, MSG_DREQ);
+  fprintf (stderr, "[%d] sending request for donor to 0\n", rank);
+  ret = MPI_Send (recv_buf, pos, MPI_PACKED, 0, TAG_NEEDS_ATTENTION, 
+                  MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Send()");
+  /* Wait for answer from 0. */
+  while (1)
+    {
+      ret = MPI_Recv (recv_buf, recv_buf_len, MPI_PACKED, MPI_ANY_SOURCE, 
+                      TAG_NEEDS_ATTENTION, MPI_COMM_WORLD, &status);
+      if (ret != MPI_SUCCESS)
+        mpierror (ret, "MPI_Recv()");
+      pos = 0;
+      type = unpack_char (recv_buf, recv_buf_len, &pos);
+      if (type != TYPE_DONOR || status.MPI_SOURCE != 0)
+        /* Some other clamour message. */
+        {
+          process_clamour_message (recv_buf, recv_buf_len);
+          continue;
+        }
+      else
+        /* Received the donor. */
+        break;
+    }
+
+  return (int)unpack_char (recv_buf, recv_buf_len, &pos);
+}
+
+
+void request_work (int from)
+{
+  int ret, j=0;
+  size_t pos = 0;
+
+  /* Send the request. */
+  pack_simple_msg (recv_buf, recv_buf_len, &pos, MSG_REQ);
+  fprintf (stderr, "[%d] sending request for work to %d\n", rank, from);
+  ret = MPI_Send (recv_buf, pos, MPI_PACKED, from, TAG_NEEDS_ATTENTION, 
+                  MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Send()");
+
+  /* Process answer. */
+  while (1)
+    {
+      char type, msg_type;
+      stkelem_t * se;
+      int dnr;
+      
+
+      ret = MPI_Recv (recv_buf, recv_buf_len, MPI_PACKED, MPI_ANY_SOURCE, 
+                      TAG_NEEDS_ATTENTION, MPI_COMM_WORLD, &status);
+      if (status.MPI_SOURCE != from)
+        {
+          process_clamour_message (recv_buf, recv_buf_len);
+          continue;
+        }
+      if (ret != MPI_SUCCESS)
+        mpierror (ret, "MPI_Recv()");
+      pos = 0;
+      type = unpack_char (recv_buf, recv_buf_len, &pos);
+      switch (type)
+        {
+        case TYPE_MSG:
+          msg_type = unpack_char (recv_buf, recv_buf_len, &pos);
+          switch (msg_type)
+            {
+            case MSG_EOE:
+              fprintf (stderr, "[%d] received MSG_EOE from %d\n", rank, from);
+              return;
+              
+            case MSG_DENY:
+              fprintf (stderr, "[%d] received denying answer from %d\n", 
+                       rank, from);
+              do_tokens ();
+              do 
+                {
+                  if (rank != 0)
+                    /* Request a donor from 0. */
+                    dnr = request_donor ();
+                  else
+                    {
+                      dnr = donor;
+                      donor = (donor + 1) % worldsize;
+                    }
+                  if (dnr != rank)
+                    /* Send request to obtained donor and read results. */
+                    request_work (dnr);
+                  //continue;
+                  /* Request a new donor from 0. */
+                  //dnr = request_donor ();
+                  /* Send request to obtained donor and read results. */
+                  //request_work (dnr);
+                }
+              while (dnr == rank);
+              return;
+
+            default:
+              fprintf (stderr, "[%d] processing clamour message from %d"
+                       " in request_work()\n", rank, status.MPI_SOURCE);
+              process_clamour_message (recv_buf, recv_buf_len);
+              continue;
+            }
+
+        case TYPE_STKELEM:
+          se = stkelem_deserialize (recv_buf, recv_buf_len, &pos);
+          if (! se)
+            error ("Memory allocation problem.");
+          if (! list_pushback (stack, se))
+            error ("list_pushback()");
+          fprintf (stderr, "[%d] received stack element %d from %d\n",
+                   rank, ++j, from);
+          continue;
+          
+        default:
+          fprintf (stderr, "[%d] processing clamour message from %d"
+                   " in request_work()\n", rank, status.MPI_SOURCE);
+          process_clamour_message (recv_buf, recv_buf_len);
+          continue;
+        }
+    }
+  error ("BUG!!! You should not have ever seen this!!!");
+}
+
+
+void 
+process_best (void * buf, size_t insize, size_t * pos)
+{
+  stkelem_t * se;
+  
+  if (rank != 0)
+    error ("'Best' stack element received by process != P1!!!");
+  
+  se = stkelem_deserialize (buf, insize, pos);
+  if (! se)
+    error ("Memory allocation problem.");
+  if (se->weight < best->weight)
+    {
+      best = se;
+      if (best->weight == 1)
+        {
+          fprintf (stderr, "[%d] got best->weight==1, "
+                   "invoking end_computation()\n", rank);
+          end_computation ();
+        }
+    }
+  else
+    {
+      stkelem_delete (se);
+      fprintf (stderr, "[%d] received 'best' that"
+               " is worse than its 'best'!!!\n", rank);
+    }
+  fprintf (stderr, "[0] received new best stack element, weight=%d\n",
+          best->weight);
+}
+
+
+void 
+process_message (void * buf, size_t insize)
+{
+  int ret;
+  size_t inpos = 0;
+  char type;
+  char msg_type;
+  
+  type = unpack_char (buf, insize, &inpos);
+  fprintf (stderr, "[%d] processing message type='%c'\n", rank, type);
+  switch (type)
+    {
+    case TYPE_MSG:
+      msg_type = unpack_char (buf, insize, &inpos);
+      fprintf (stderr, "[%d] processing simple message type='%c'\n", rank, 
+               msg_type);
+      switch (msg_type)
+        {
+        default:
+          fprintf (stderr, "[%d] unhandled MSG_* in process_message()!!!\n", 
+                   rank);
+          error ("Unhandled MSG_*!!!");
+        }
+
+    case TYPE_BEST:
+      process_best (buf, insize, &inpos);
+      return;
+
+    case TYPE_BWEIGHT:
+      {
+        int w;
+        
+        if (rank == 0)
+          error ("Message TYPE_BWEIGHT received by process 0.");
+        ret = MPI_Unpack (buf, insize, &inpos, &w, 1, MPI_INT, MPI_COMM_WORLD);
+        if (ret != MPI_SUCCESS)
+          mpierror (ret, "MPI_Unpack");
+        if (w < best->weight)
+          best->weight = w;
+        else
+          fprintf (stderr, "[%d] received 'best' weight"
+                  " that is worse than its 'best'!!!\n", rank);
+        fprintf (stderr, "[%d] received new best weight=%d\n", rank, 
+                 best->weight);
+        return;
+      }
+
+
+    default:
+      error ("Unhandled TYPE_* in process_message()!!!");
+    }
+}
 
 
 int 
@@ -779,15 +1068,15 @@ main (int argc, char * argv[])
   /* Some basic checks and initialization. */
   if (argc < 2)
     {
-      printf ("Pocet argumentu: %d\n", argc);
+      fprintf (stderr, "Pocet argumentu: %d\n", argc);
       for (i = 0; i < argc; ++i)
-        printf ("`%s'\n", argv[i]);
+        fprintf (stderr, "`%s'\n", argv[i]);
       error ("Syntax: mrg <input graph>");
     }
   srandom (time (NULL));
   
   /* Open input file and read graph's dimension. */
-  printf ("File to open: %s\n", argv[argc-1]); 
+  fprintf (stderr, "File to open: %s\n", argv[argc-1]); 
   infile = fopen (argv[argc-1], "r");
   if (! infile)
     error ("fopen()");
@@ -817,105 +1106,90 @@ main (int argc, char * argv[])
 
   /* Do the actual work here.  */
   initialize ();
+  /* Synchronize before start of the computation. */
+  MPI_Barrier (MPI_COMM_WORLD);
   while (1)
     {
       listelem_t * it;
       stkelem_t * el;
-      int src, dnr, flag = 0;
-      char type, msg;
+      int dnr, flag = 0;
 
       fflush (stdout);
 
       /* Probe for incoming messages and process them. */
       while (1)
         {
-          printf ("[%d] probing for messages\n", rank);
-          ret = MPI_Iprobe (MPI_ANY_SOURCE, 1, MPI_COMM_WORLD, &flag, &status);
+          flag = 0;
+          //fprintf (stderr, "[%d] probing for messages\n", rank);
+          ret = MPI_Iprobe (MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &flag,
+                            &status);
           if (ret != MPI_SUCCESS)
             mpierror (ret, "MPI_Iprobe()");
           if (flag)
             {
-              ret = MPI_Recv (recv_buf, recv_buf_len, MPI_BYTE, MPI_ANY_SOURCE,
-                              1, MPI_COMM_WORLD, &status);
+              ret = MPI_Recv (recv_buf, recv_buf_len, MPI_PACKED, 
+                              MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, 
+                              &status);
               if (ret != MPI_SUCCESS)
                 mpierror (ret, "MPI_Recv()");
-              process_message (recv_buf);
+              switch (status.MPI_TAG)
+                {
+                case TAG_NEEDS_ATTENTION:
+                  process_clamour_message (recv_buf, recv_buf_len);
+                  break;
+                case TAG_CAN_WAIT:
+                  process_message (recv_buf, recv_buf_len);
+                  break;
+                default:
+                  error ("Unknown TAG_*!!!");
+                }
               continue;
             }
           else
             break;
         }
 
+      /* Idle while waiting for MSG_EOC from 0. */
+      if (best->weight == 1)
+        {
+          sleep (1);
+          continue;
+        }
+
       /* Are we out of work? */
       if (list_size (stack) == 0)
         {
-          printf ("[%d] out of work\n", rank);
-          if (rank == 0)
-            {
-              /* Send white token to P2. */
-              printf ("[0] sending white token to 1\n");
-              ret = MPI_Send ((void *)&wtoken_msg, sizeof (msg_t), MPI_BYTE, 1, 
-                              1, MPI_COMM_WORLD);
-              if (ret != MPI_SUCCESS)
-                mpierror (ret, "MPI_Send()");
-            }
+          fprintf (stderr, "[%d] out of work\n", rank);
+          /* Deny any requests for work. */
+          wouldgive = 0;
+
+          /* First do the right thing with tokens. */
+          do_tokens ();
+
+          if (rank != 0)
+            /* Request a donor from 0. */
+            dnr = request_donor ();
           else
             {
-              recv_buf->type = TYPE_TOKEN;
-              recv_buf->buf[0] = token;
-              printf ("[%d] sending '%c' token to %d\n",
-                      rank, token, (rank + 1) % worldsize);
-              ret = MPI_Send (recv_buf, sizeof (msg_t), MPI_BYTE, 
-                              (rank + 1)  % worldsize, 1, MPI_COMM_WORLD);
-              if (ret != MPI_SUCCESS)
-                mpierror (ret, "MPI_Send()");
-              mycolor = TOKEN_WHITE;
+              dnr = donor;
+              donor = (donor + 1) % worldsize;
             }
-          /* Send request for donor. */
-          printf ("[%d] sending request for donor to 0\n", rank);
-          ret = MPI_Send ((void *)&dreq_msg, sizeof (msg_t), MPI_BYTE, 0, 
-                          1, MPI_COMM_WORLD);
-          if (ret != MPI_SUCCESS)
-            mpierror (ret, "MPI_Send()");
-          /* Wait for an answer. */
-          do
-            {
-              ret = MPI_Recv (recv_buf, recv_buf_len, MPI_BYTE, MPI_ANY_SOURCE,
-                              1, MPI_COMM_WORLD, &status);
-              if (ret != MPI_SUCCESS)
-                mpierror (ret, "MPI_Recv()");
-              src = status.MPI_SOURCE;
-              type = recv_buf->type;
-              process_message (recv_buf);
-            }
-          while (src != 0 || type != TYPE_DONOR);
-          /* Send request to obtained donor and read results. */
-          dnr = recv_buf->buf[0];
-          printf ("[%d] sending request for work to %d\n", rank, dnr);
-          ret = MPI_Send ((void *)&req_msg, sizeof (msg_t), MPI_BYTE, dnr,
-                          1, MPI_COMM_WORLD);
-          if (ret != MPI_SUCCESS)
-            mpierror (ret, "MPI_Send()");
-          do 
-            {
-              ret = MPI_Recv (recv_buf, recv_buf_len, MPI_BYTE, MPI_ANY_SOURCE,
-                              1, MPI_COMM_WORLD, &status);
-              src = status.MPI_SOURCE;
-              type = recv_buf->type;
-              msg = recv_buf->buf[0];
-              process_message (recv_buf);
-            }
-          while (src != dnr 
-                 || ! ((type == TYPE_MSG && msg == MSG_EOE)
-                       || type == TYPE_STKELEM));
+          if (dnr != rank)
+            /* Send request to obtained donor and read results. */
+            request_work (dnr);
+
+          /* At this point we should have some work to give. */
+          wouldgive = 1;
+
           continue;
         }
       
       el = list_first (stack, &it);
       if (! el)
         {
-          printf ("[%d] stack empty even after request for work, exiting\n",
+          fprintf (stderr, "[%d] stack empty even after request for work, exiting\n",
                   rank);
+          MPI_Finalize ();
           exit (EXIT_SUCCESS);
         }
       /* Move deeper in DFS tree if possible. */
@@ -927,19 +1201,6 @@ main (int argc, char * argv[])
               end_computation ();
             else
               continue;
-            /*{
-                do
-                  {
-                    ret = MPI_Recv (recv_buf, recv_buf_len, MPI_BYTE,
-                                    MPI_ANY_SOURCE, 1, MPI_COMM_WORLD, &status);
-                    if (ret != MPI_SUCCESS)
-                      mpierror (ret, "MPI_Recv");
-                  }
-                while (status.MPI_SOURCE != 0 
-                       || recv_buf->type != TYPE_MSG
-                       || recv_buf->buf[0] != MSG_EOC);
-                exit (EXIT_SUCCESS);
-                }*/
           }
       if (generate_depth (stack, el))
         {
@@ -955,19 +1216,6 @@ main (int argc, char * argv[])
                 end_computation ();
               else
                 continue;
-              /*
-              do
-                {
-                  ret = MPI_Recv (recv_buf, recv_buf_len, MPI_BYTE,
-                                  MPI_ANY_SOURCE, 1, MPI_COMM_WORLD, &status);
-                  if (ret != MPI_SUCCESS)
-                    mpierror (ret, "MPI_Recv");
-                }
-              while (status.MPI_SOURCE != 0 
-                     || recv_buf->type != TYPE_MSG
-                     || recv_buf->buf[0] != MSG_EOC);
-              exit (EXIT_SUCCESS);
-              */
             }
           else
             continue;
@@ -980,26 +1228,5 @@ main (int argc, char * argv[])
         }
     }
 
-  printf ("Nobody should see this!!\n");
-  /* Print out the solution. */
-  printf ("Weight of the best solution: %d\n", best->weight);
-  printf ("Set X:");
-  for (i = 0; i < bitmap_size (best->set); ++i)
-    {
-      int b = bitmap_getbit (best->set, i);
-      if (! b)
-	printf (" %d", i+1);
-    }
-  printf ("\n");
-  printf ("Set Y:");
-  for (i = 0; i < bitmap_size (best->set); ++i)
-    {
-      int b = bitmap_getbit (best->set, i);
-      if (b)
-	printf (" %d", i+1);
-    }
-  printf ("\n");
-
-  MPI_Finalize ();
-  exit (EXIT_SUCCESS);
+  error ("Got out of the main loop, that should never happen!!");
 }

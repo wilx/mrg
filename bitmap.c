@@ -1,7 +1,9 @@
-#include "bitmap.h"
-#include "gstdint.h"
 #include <stdlib.h>
 #include <string.h>
+#include <mpi.h>
+#include "gstdint.h"
+#include "bitmap.h"
+#include "utility.h"
 
 #define BITS_PER_CHAR (8*SIZEOF_CHAR)
 
@@ -121,6 +123,9 @@ bitmap_init (bitmap_t * bm, unsigned size)
 {
   const unsigned bytes = bytes_from_size (size);
 
+  if (size == 0)
+    abort ();
+
   bm->buf = malloc (bytes);
   if (! bm->buf)
     return NULL;
@@ -174,6 +179,8 @@ bitmap_clone (const bitmap_t * bm)
       free (newbm);
       return NULL;
     }
+  if (bm->size == 0)
+    abort ();
   memcpy (newbm->buf, bm->buf, bytes);
   newbm->size = bm->size;
   return newbm;
@@ -491,19 +498,17 @@ bitmap_serialize_size (const bitmap_t * bm)
    Serializes bitmap into a buffer.
 */
 void 
-bitmap_serialize (void * buf, size_t * size, size_t * pos,
-                  const bitmap_t * bm)
+bitmap_serialize (void * buf, size_t size, size_t * pos, bitmap_t * bm)
 {
-  size_t sz = 0;
-
-  *(unsigned *)(buf + *pos) = bm->size;
-  sz += sizeof (unsigned);
-
-  memcpy (buf + *pos + sz, bm->buf, bytes_from_map (bm));
-  sz += bytes_from_map (bm);
-
-  *size = sz;
-  *pos += sz;
+  int ret;
+  
+  ret = MPI_Pack (&bm->size, 1, MPI_UNSIGNED, buf, size, pos, MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack");
+  ret = MPI_Pack (bm->buf, elems_from_map(bm), MPI_UNSIGNED, buf, size, pos,
+                  MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Pack");
 }
 
 
@@ -511,27 +516,31 @@ bitmap_serialize (void * buf, size_t * size, size_t * pos,
    Reconstructs bitmap out of serialized representation.
 */
 bitmap_t * 
-bitmap_deserialize (const void * buf, size_t * pos)
+bitmap_deserialize (void * buf, size_t insize, size_t * pos)
 {
-  size_t p = *pos;
   bitmap_t * bm;
   unsigned elems;
+  int ret;
 
-  elems = elems_from_size (*(unsigned *)(buf + p));
+  ret = MPI_Unpack (buf, insize, pos, &elems, 1, MPI_UNSIGNED, MPI_COMM_WORLD);
+  
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Unpack()");
   bm = malloc (sizeof (bitmap_t));
   if (! bm)
     return NULL;
+  bm->size = elems;
+  elems = elems_from_size (elems);
   bm->buf = malloc (elems * sizeof (uint32_t));
   if (! bm->buf)
     {
       free (bm);
       return NULL;
     }
-  bm->size = *(unsigned *)(buf + p);
-  p += sizeof (unsigned);
-  memcpy (bm->buf, buf + p, elems * sizeof (uint32_t));
-  p += elems * sizeof (uint32_t);
-
-  *pos = p;  
+  ret = MPI_Unpack (buf, insize, pos, bm->buf, elems, MPI_UNSIGNED,
+                    MPI_COMM_WORLD);
+  if (ret != MPI_SUCCESS)
+    mpierror (ret, "MPI_Unpack()");
+  
   return bm;
 }

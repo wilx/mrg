@@ -118,48 +118,44 @@ target_alias = @target_alias@
 target_cpu = @target_cpu@
 target_os = @target_os@
 target_vendor = @target_vendor@
+AUTOMAKE_OPTIONS = foreign dist-bzip2
 AM_CFLAGS = 
-noinst_PROGRAMS = test_bitmap mrg
-test_bitmap_SOURCES = test_bitmap.c matrix.c matrix.h bitmap.c bitmap.h list.c list.h
-mrg_SOURCES = mrg.c matrix.c matrix.h bitmap.c bitmap.h list.c list.h
+noinst_PROGRAMS = mrg
+#test_bitmap_SOURCES = test_bitmap.c matrix.c matrix.h bitmap.c bitmap.h
+#test_bitmap_SOURCES += list.c list.h
+mrg_SOURCES = mrg.c matrix.c matrix.h bitmap.c bitmap.h list.c list.h utility.c utility.h
 EXTRA_DIST = acinclude.m4
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 mkinstalldirs = $(SHELL) $(top_srcdir)/mkinstalldirs
 CONFIG_HEADER = config.h
 CONFIG_CLEAN_FILES =
-noinst_PROGRAMS = test_bitmap$(EXEEXT) mrg$(EXEEXT)
+noinst_PROGRAMS = mrg$(EXEEXT)
 PROGRAMS = $(noinst_PROGRAMS)
 
 am_mrg_OBJECTS = mrg.$(OBJEXT) matrix.$(OBJEXT) bitmap.$(OBJEXT) \
-	list.$(OBJEXT)
+	list.$(OBJEXT) utility.$(OBJEXT)
 mrg_OBJECTS = $(am_mrg_OBJECTS)
 mrg_LDADD = $(LDADD)
 mrg_DEPENDENCIES =
 mrg_LDFLAGS =
-am_test_bitmap_OBJECTS = test_bitmap.$(OBJEXT) matrix.$(OBJEXT) \
-	bitmap.$(OBJEXT) list.$(OBJEXT)
-test_bitmap_OBJECTS = $(am_test_bitmap_OBJECTS)
-test_bitmap_LDADD = $(LDADD)
-test_bitmap_DEPENDENCIES =
-test_bitmap_LDFLAGS =
 
 DEFAULT_INCLUDES =  -I. -I$(srcdir) -I.
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__depfiles_maybe = depfiles
 @AMDEP_TRUE@DEP_FILES = ./$(DEPDIR)/bitmap.Po ./$(DEPDIR)/list.Po \
 @AMDEP_TRUE@	./$(DEPDIR)/matrix.Po ./$(DEPDIR)/mrg.Po \
-@AMDEP_TRUE@	./$(DEPDIR)/test_bitmap.Po
+@AMDEP_TRUE@	./$(DEPDIR)/utility.Po
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
 CCLD = $(CC)
 LINK = $(CCLD) $(AM_CFLAGS) $(CFLAGS) $(AM_LDFLAGS) $(LDFLAGS) -o $@
-DIST_SOURCES = $(mrg_SOURCES) $(test_bitmap_SOURCES)
+DIST_SOURCES = $(mrg_SOURCES)
 DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/configure COPYING INSTALL \
 	Makefile.am TODO acinclude.m4 aclocal.m4 config.guess \
 	config.h.in config.sub configure configure.in depcomp \
 	install-sh missing mkinstalldirs
-SOURCES = $(mrg_SOURCES) $(test_bitmap_SOURCES)
+SOURCES = $(mrg_SOURCES)
 
 all: config.h
 	$(MAKE) $(AM_MAKEFLAGS) all-am
@@ -205,9 +201,6 @@ clean-noinstPROGRAMS:
 mrg$(EXEEXT): $(mrg_OBJECTS) $(mrg_DEPENDENCIES) 
 	@rm -f mrg$(EXEEXT)
 	$(LINK) $(mrg_LDFLAGS) $(mrg_OBJECTS) $(mrg_LDADD) $(LIBS)
-test_bitmap$(EXEEXT): $(test_bitmap_OBJECTS) $(test_bitmap_DEPENDENCIES) 
-	@rm -f test_bitmap$(EXEEXT)
-	$(LINK) $(test_bitmap_LDFLAGS) $(test_bitmap_OBJECTS) $(test_bitmap_LDADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT) core *.core
@@ -219,7 +212,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/list.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/matrix.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mrg.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/test_bitmap.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/utility.Po@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	if $(COMPILE) -MT $@ -MD -MP -MF "$(DEPDIR)/$*.Tpo" \
@@ -349,8 +342,13 @@ dist-gzip: distdir
 	$(AMTAR) chof - $(distdir) | GZIP=$(GZIP_ENV) gzip -c >$(distdir).tar.gz
 	$(am__remove_distdir)
 
+dist-bzip2: distdir
+	$(AMTAR) chof - $(distdir) | bzip2 -9 -c >$(distdir).tar.bz2
+	$(am__remove_distdir)
+
 dist dist-all: distdir
 	$(AMTAR) chof - $(distdir) | GZIP=$(GZIP_ENV) gzip -c >$(distdir).tar.gz
+	$(AMTAR) chof - $(distdir) | bzip2 -9 -c >$(distdir).tar.bz2
 	$(am__remove_distdir)
 
 # This target untars the dist file and tries a VPATH configuration.  Then
@@ -489,13 +487,13 @@ ps-am:
 uninstall-am: uninstall-info-am
 
 .PHONY: CTAGS GTAGS all all-am check check-am clean clean-generic \
-	clean-noinstPROGRAMS ctags dist dist-all dist-gzip distcheck \
-	distclean distclean-compile distclean-generic distclean-hdr \
-	distclean-tags distcleancheck distdir distuninstallcheck dvi \
-	dvi-am info info-am install install-am install-data \
-	install-data-am install-exec install-exec-am install-info \
-	install-info-am install-man install-strip installcheck \
-	installcheck-am installdirs maintainer-clean \
+	clean-noinstPROGRAMS ctags dist dist-all dist-bzip2 dist-gzip \
+	distcheck distclean distclean-compile distclean-generic \
+	distclean-hdr distclean-tags distcleancheck distdir \
+	distuninstallcheck dvi dvi-am info info-am install install-am \
+	install-data install-data-am install-exec install-exec-am \
+	install-info install-info-am install-man install-strip \
+	installcheck installcheck-am installdirs maintainer-clean \
 	maintainer-clean-generic mostlyclean mostlyclean-compile \
 	mostlyclean-generic pdf pdf-am ps ps-am tags uninstall \
 	uninstall-am uninstall-info-am
