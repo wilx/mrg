@@ -475,3 +475,63 @@ bitmap_print (const bitmap_t * bm, FILE * stream, const char * sep)
     }
   return count;
 }
+
+
+/**
+   Returns how many bytes are needed to serialize bitmap.
+*/
+size_t 
+bitmap_serialize_size (const bitmap_t * bm)
+{
+  return sizeof (unsigned) + elems_from_map (bm) * sizeof (uint32_t);
+}
+
+
+/**
+   Serializes bitmap into a buffer.
+*/
+void 
+bitmap_serialize (void * buf, size_t * size, size_t * pos,
+                  const bitmap_t * bm)
+{
+  size_t sz = 0;
+
+  *(unsigned *)(buf + *pos) = bm->size;
+  sz += sizeof (unsigned);
+
+  memcpy (buf + *pos + sz, bm->buf, bytes_from_map (bm));
+  sz += bytes_from_map (bm);
+
+  *size = sz;
+  *pos += sz;
+}
+
+
+/**
+   Reconstructs bitmap out of serialized representation.
+*/
+bitmap_t * 
+bitmap_deserialize (const void * buf, size_t * pos)
+{
+  size_t p = *pos;
+  bitmap_t * bm;
+  unsigned elems;
+
+  elems = elems_from_size (*(unsigned *)(buf + p));
+  bm = malloc (sizeof (bitmap_t));
+  if (! bm)
+    return NULL;
+  bm->buf = malloc (elems * sizeof (uint32_t));
+  if (! bm->buf)
+    {
+      free (bm);
+      return NULL;
+    }
+  bm->size = *(unsigned *)(buf + p);
+  p += sizeof (unsigned);
+  memcpy (bm->buf, buf + p, elems * sizeof (uint32_t));
+  p += elems * sizeof (uint32_t);
+
+  *pos = p;  
+  return bm;
+}

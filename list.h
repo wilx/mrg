@@ -16,6 +16,7 @@ extern "C" {
                                      listelem_t * next, void * data);
   extern void * listelem_delete (listelem_t * el);
   extern void * listelem_destroy (listelem_t * el);
+  extern void * listelem_data (const listelem_t * el);
 
 
   struct _list_t;

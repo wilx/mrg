@@ -1,6 +1,7 @@
 #ifndef _MATRIX_H_
 #define _MATRIX_H_
 
+#include <stddef.h>
 #include "config.h"
 
 #ifdef __cplusplus
@@ -30,6 +31,12 @@ extern "C" {
   extern int trimatrix_get (const trimatrix_t * mx, unsigned x, unsigned y);
   extern int trimatrix_set (const trimatrix_t * mx, 
                             unsigned x, unsigned y, int val);
+  extern size_t trimatrix_serialize_size (const trimatrix_t * mx);
+  extern trimatrix_t * trimatrix_deserialize (const void * buf,
+                                              size_t * pos);
+  extern void trimatrix_serialize (void * buf, size_t * size, size_t * pos,
+                                   const trimatrix_t * mx);
+  
 
   /**
      Upper triangular matrix with diagonal with elements of type 
@@ -47,6 +54,11 @@ extern "C" {
                                   unsigned x, unsigned y);
   extern unsigned wtrimatrix_set (const wtrimatrix_t * mx, 
                                   unsigned x, unsigned y, unsigned char val);
+  extern size_t wtrimatrix_serialize_size (const wtrimatrix_t * mx);
+  extern wtrimatrix_t * wtrimatrix_deserialize (const void * buf,
+                                                size_t * pos);
+  extern void wtrimatrix_serialize (void * buf, size_t * size, size_t * pos,
+                                    const wtrimatrix_t * mx);
 
 #ifdef __cplusplus
 }

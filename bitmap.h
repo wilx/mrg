@@ -32,6 +32,11 @@ extern "C" {
   extern unsigned bitmap_size (const bitmap_t * bm);
   extern int bitmap_print (const bitmap_t * bm, FILE * stream, 
                            const char * sep);
+  extern size_t bitmap_serialize_size (const bitmap_t * bm);
+  extern void bitmap_serialize (void * buf, size_t * size, size_t * pos,
+                                const bitmap_t * bm);
+  extern bitmap_t * bitmap_deserialize (const void * buf, size_t * pos);
+  
   
 #ifdef __cplusplus
 } /* extern "C" */

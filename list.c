@@ -103,6 +103,15 @@ listelem_delete (listelem_t * el)
 
 
 /**
+ */
+void * 
+listelem_data (const listelem_t * el)
+{
+  return el->data;
+}
+
+
+/**
    Initializes list_t instance.
    @param l list
    @return list

@@ -165,9 +165,62 @@ trimatrix_set (const trimatrix_t * mx, unsigned x, unsigned y, int val)
 }
 
 
-/*
- */
+/**
+   Returns how many bytes are needed to serialize trimatrix.
+*/
+size_t 
+trimatrix_serialize_size (const trimatrix_t * mx)
+{
+  return bitmap_serialize_size (mx->bm) 
+    + sizeof (unsigned);
+}
 
+
+/**
+   Serializes trimatrix into a buffer buf.
+*/
+void 
+trimatrix_serialize (void * buf, size_t * size, size_t * pos,
+                     const trimatrix_t * mx)
+{
+  *(unsigned *)(buf + *pos) = mx->n;
+  *pos += sizeof (unsigned);
+  
+  bitmap_serialize (buf, size, pos, mx->bm);
+  *size += sizeof (unsigned);
+}
+
+  
+/**
+   Reconstructs trimatrix out of serialized represntation.
+*/
+trimatrix_t * 
+trimatrix_deserialize (const void * buf, size_t * pos)
+{
+  trimatrix_t * mx;
+  size_t p = *pos;
+
+  mx = malloc (sizeof (trimatrix_t));
+  if (! mx)
+    return NULL;
+  mx->n = *(unsigned *)(buf + p);
+  p += sizeof (unsigned);
+  
+  mx->bm = bitmap_deserialize (buf, &p);
+  if (! mx->bm)
+    {
+      free (mx);
+      return NULL;
+    }
+  *pos = p;
+  
+  return mx;
+}
+
+
+/**
+
+*/
 struct _wtrimatrix_t
 {
   unsigned char * buf;
@@ -270,3 +323,55 @@ wtrimatrix_set (const wtrimatrix_t * mx, unsigned x, unsigned y, unsigned char v
   mx->buf[i] = val;
   return prev;
 }
+
+
+size_t 
+wtrimatrix_serialize_size (const wtrimatrix_t * mx)
+{
+  return sizeof (unsigned) + elems_from_n (mx->n);
+}
+
+
+void 
+wtrimatrix_serialize (void * buf, size_t * size, size_t * pos,
+                      const wtrimatrix_t * mx)
+{
+  unsigned sz = elems_from_n (mx->n);
+
+  *(unsigned *)(buf + *pos) = mx->n;
+  *pos += sizeof (unsigned);
+  
+  memcpy (buf + *pos, mx->buf, sz);
+
+  *pos += sz;
+  *size = sz + sizeof (unsigned);
+}
+
+
+wtrimatrix_t * 
+wtrimatrix_deserialize (const void * buf, size_t * pos)
+{
+  size_t p = *pos;
+  wtrimatrix_t * mx;
+  unsigned elems;
+
+  mx = malloc (sizeof (wtrimatrix_t));
+  if (! mx)
+    return NULL;
+  mx->n = *(unsigned *)buf;
+  p += sizeof (unsigned);
+
+  elems = elems_from_n (mx->n);
+  mx->buf = malloc (elems);
+  if (! mx->buf)
+    {
+      free (mx);
+      return NULL;
+    }
+  memcpy (mx->buf, buf + p, elems);
+  p += elems;
+  
+  *pos = p;
+  return mx;
+}
+

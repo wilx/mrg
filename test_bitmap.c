@@ -89,6 +89,23 @@ int main (void)
     printf ("\n");
   }
 
+  /* Check serialization. */
+  {
+    bitmap_t * copy;
+    void * buf;
+    size_t sz = bitmap_serialize_size (bm),
+      size, pos = 0;
+    buf = malloc (sz);
+    if (! sz)
+      abort ();
+    bitmap_serialize (buf, &size, &pos, bm);
+    pos = 0;
+    copy = bitmap_deserialize (buf, &pos);
+    bitmap_print (copy, stdout, " ");
+    printf ("\n");
+    bitmap_delete (copy);
+  }
+
   bitmap_delete (bm);
   return 0;
 }

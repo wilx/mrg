@@ -17,6 +17,7 @@ AX_CREATE_STDINT_H([gstdint.h])
 AX_C___ATTRIBUTE__
 AC_CHECK_FUNCS([memcpy memset])
 AC_CHECK_HEADERS([limits.h time.h])
+AC_TYPE_SIZE_T
 AC_CHECK_SIZEOF([char])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([Makefile])
