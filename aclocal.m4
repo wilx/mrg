@@ -115,7 +115,7 @@ dnl Remember, if the system already had a valid <stdint.h>, the generated
 dnl file will include it directly. No need for fuzzy HAVE_STDINT_H things...
 dnl
 dnl @, (status: used on new platforms) (see http://ac-archive.sf.net/gstdint/)
-dnl @version $Id: aclocal.m4,v 1.5 2003/11/25 13:32:57 haismav Exp $
+dnl @version $Id: aclocal.m4,v 1.6 2003/12/03 14:46:31 haismav Exp $
 dnl @author  Guido Draheim <guidod@gmx.de> 
 
 AC_DEFUN([AX_CREATE_STDINT_H],
@@ -673,7 +673,7 @@ dnl - $2 add-value-if-not-found : nothing
 dnl - $3 action-if-found : add value to shellvariable
 dnl - $4 action-if-not-found : nothing 
 dnl
-dnl @version $Id: aclocal.m4,v 1.5 2003/11/25 13:32:57 haismav Exp $
+dnl @version $Id: aclocal.m4,v 1.6 2003/12/03 14:46:31 haismav Exp $
 dnl @author Guido Draheim <guidod@gmx.de>
 dnl
 AC_DEFUN([AX_CFLAGS_WARN_ALL],[dnl
@@ -778,7 +778,7 @@ dnl __attribute__(x) to empty if not supported.
 dnl
 dnl Originating from the 'pork' package by Ryan McCabe <ryan@numb.org>
 dnl
-dnl @version $Id: aclocal.m4,v 1.5 2003/11/25 13:32:57 haismav Exp $
+dnl @version $Id: aclocal.m4,v 1.6 2003/12/03 14:46:31 haismav Exp $
 dnl @author Christian Haggstrom <chm@c00.info>
 
 AN_IDENTIFIER([__attribute__], [AX_C___ATTRIBUTE__])
